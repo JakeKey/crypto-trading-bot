@@ -1,4 +1,3 @@
-// 0.0001 eth
 import { ethers, Contract, Wallet } from "ethers";
 
 import { DebugLevels } from "../types/enums";
@@ -34,7 +33,7 @@ export const checkAllowance = async (
   }
 };
 
-export const buyToken = async (
+export const swapToken = async (
   tokenIn: Contract,
   tokenOut: Contract,
   wallet: Wallet,

@@ -1,0 +1,22 @@
+// use prisma-8
+// Contract inferred from the live database schema. Edit as needed, then run `prisma contract emit`.
+
+namespace public {
+  model Positions {
+    id              Int                      @id(map: "positions_pkey") @default(autoincrement())
+    tokenIdentifier VarChar(63)              @map("token_identifier")
+    amount          Float
+    pnl             Float?
+    positionStatus  pg.enum(PositionStatus)? @default("open") @map("position_status")
+    createdAt       Timestamp?               @default(now()) @map("created_at")
+    price           Float
+
+    @@map("positions")
+  }
+
+  native_enum PositionStatus {
+    open = "open"
+    closed = "closed"
+    @@map("position_status")
+  }
+}

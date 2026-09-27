@@ -4,32 +4,43 @@ import { DebugLevels } from "../types/enums";
 import { QUOTER_V2_ABI } from "../abis";
 import { CONFIG_CONSTS } from "../config";
 import { createDebug } from "../debug";
-import { USDG_ADDRESS } from "../contracts";
 
 const { CTB_ALCHEMY_API_KEY, CTB_COINGECKO_API_KEY, QUOTER_V2 } = CONFIG_CONSTS;
 
 const debug = createDebug("getQuote");
 
-export const getQuote = async (
+export const getQuoteAndAmountOut = async (
   provider: ContractRunner,
-  address: string,
-  usdgInAmount: bigint,
+  tokenIn: Contract,
+  tokenOut: Contract,
+  amountIn: bigint,
   fee = 10000,
 ): Promise<bigint | undefined> => {
   try {
     const quoter = new Contract(QUOTER_V2, QUOTER_V2_ABI, provider);
 
+    const tokenInAddress = await tokenIn.getAddress();
+    const tokenOutAddress = await tokenOut.getAddress();
+
+    debug("tokenOutAddress: " + JSON.stringify(tokenOutAddress));
+
     const params = {
-      tokenIn: USDG_ADDRESS,
-      tokenOut: address,
-      amountIn: usdgInAmount,
+      tokenIn: tokenInAddress,
+      tokenOut: tokenOutAddress,
+      amountIn,
       fee,
-      sqrtPriceLimitX96: 0,
+      sqrtPriceLimitX96: 0n,
     };
 
-    const result = await quoter.quoteExactInputSingle.staticCall(params);
+    const quote = await quoter.quoteExactInputSingle.staticCall(params);
 
-    return result[0];
+    if (!quote.length) return 0n;
+
+    const amountOut = quote[0];
+
+    debug("amountOut: " + amountOut);
+
+    return amountOut;
   } catch (err) {
     debug(err as string, DebugLevels.ERROR);
     return undefined;
@@ -50,11 +61,37 @@ export const getCurrentSMA = (prices: PriceOC[]): number => {
 
   const averagesSum = averageOCPrices.reduce((pVal, cVal) => pVal + cVal, 0);
 
-  return averagesSum / prices.length;
+  const sma = averagesSum / prices.length;
+  debug("sma: " + sma);
+
+  return sma;
+};
+
+export const getCoingeckoTokenPrice = async (
+  identifier: string,
+): Promise<number | undefined> => {
+  try {
+    if (!CTB_COINGECKO_API_KEY) return;
+
+    const response = await fetch(
+      `https://api.coingecko.com/api/v3/simple/price?vs_currencies=usd&ids=${identifier}`,
+      {
+        method: "GET",
+        headers: {
+          "x-cg-demo-api-key": CTB_COINGECKO_API_KEY,
+        },
+      },
+    );
+    const tokenPrice: number = (await response.json())[identifier].usd;
+    debug("tokenPrice: " + JSON.stringify(tokenPrice));
+
+    return tokenPrice;
+  } catch (error) {
+    debug("Error: " + error, DebugLevels.ERROR);
+  }
 };
 
 export const getCoingeckoHistoricalPrices = async (
-  //   provider: ContractRunner,
   identifier: string,
 ): Promise<PriceOC[]> => {
   try {
@@ -79,7 +116,7 @@ export const getCoingeckoHistoricalPrices = async (
 
     return pricesOC;
   } catch (error) {
-    console.error("Error:", error);
+    debug("Error: " + error, DebugLevels.ERROR);
 
     return [];
   }
