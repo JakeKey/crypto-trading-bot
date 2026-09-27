@@ -27,12 +27,6 @@ export const TOKEN_ADDRESSES: TokensData[] = [
     decimals: 18,
     poolFee: 10000,
   },
-  {
-    identifier: "bucket-shop",
-    address: "0xbc9e7b1c5c0081f4ae85e71ec95703d3dec9ffad",
-    decimals: 18,
-    poolFee: 10000,
-  },
 ];
 
 export const WETH_ADDRESS = "0x0Bd7D308f8E1639FAb988df18A8011f41EAcAD73";

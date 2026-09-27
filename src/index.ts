@@ -1,4 +1,4 @@
-import { ethers, Contract } from "ethers";
+import { ethers } from "ethers";
 
 import { DebugLevels } from "./types/enums";
 import { ERC20_ABI } from "./abis";
@@ -7,10 +7,16 @@ import { createDebug } from "./debug";
 import { TOKEN_ADDRESSES, USDG_ADDRESS } from "./contracts";
 import {
   getCoingeckoHistoricalPrices,
+  getCoingeckoTokenPrice,
   getCurrentSMA,
-  getQuote,
+  getQuoteAndAmountOut,
 } from "./helpers/getQuote";
-import { buyToken } from "./helpers/swap";
+import { swapToken } from "./helpers/swap";
+import {
+  closePosition,
+  createNewPosition,
+  getOpenPositions,
+} from "./dbQueries/positions";
 
 const { CTB_WALLET_ADDRESS, CTB_ALCHEMY_API_KEY, CTB_PRIVATE_KEY } =
   CONFIG_CONSTS;
@@ -22,83 +28,163 @@ const url = `https://robinhood-mainnet.g.alchemy.com/v2/${CTB_ALCHEMY_API_KEY}`;
 
 const debug = createDebug("Main");
 
-const checkWalletBalance = async (
-  tokenIn: Contract,
-  decimals: number,
-): Promise<bigint> => {
-  const tokenBalance = await tokenIn.balanceOf(CTB_WALLET_ADDRESS);
-
-  const tokenBalanceNoDecimals = parseFloat(
-    ethers.formatUnits(tokenBalance, USDG_DECIMALS),
-  );
-
-  debug("tokenBalance: " + tokenBalance);
-  debug("tokenBalanceNoDecimals: " + tokenBalanceNoDecimals);
-
-  return tokenBalance;
+const getTokenByIdentifier = (tokenIdentifier: string) => {
+  return TOKEN_ADDRESSES.find((token) => token.identifier === tokenIdentifier);
 };
 
-const USDG_DECIMALS = 6;
+const sleep = (seconds: number) => {
+  return new Promise((resolve) => setTimeout(resolve, seconds * 1000));
+};
 
 const main = async () => {
   if (!CTB_WALLET_ADDRESS || !CTB_ALCHEMY_API_KEY || !CTB_PRIVATE_KEY) {
     throw new Error("Missing environmental variables!");
   }
-  const token = TOKEN_ADDRESSES[1];
 
   const provider = new ethers.JsonRpcProvider(url);
 
   const wallet = new ethers.Wallet(CTB_PRIVATE_KEY, provider);
 
-  const tokenContract = new ethers.Contract(token.address, ERC20_ABI, wallet);
   const usdgContract = new ethers.Contract(USDG_ADDRESS, ERC20_ABI, wallet);
 
-  // 0. check tokens balances
+  const openPositions = await getOpenPositions();
 
-  const tokenBalance = await checkWalletBalance(tokenContract, token.decimals);
-  const usdgBalance = await checkWalletBalance(usdgContract, token.decimals);
+  // Iterate over open positions and sell if above profitSellThreshold
+  for (let i = 0; i < openPositions.length; i++) {
+    if (!openPositions.length) break;
 
-  // 1. Check tokens prices
+    const profitSellThreshold = 1.1;
 
-  // 0.1 usdg
-  const usdgInAmount: bigint = 100000n;
+    const currentPosition = openPositions[i];
 
-  const amountOut = await getQuote(provider, token.address, usdgInAmount);
+    debug(
+      "OPEN POSITION ################################################### " +
+        currentPosition.tokenIdentifier,
+    );
 
-  if (!amountOut) return;
+    const tokenData = getTokenByIdentifier(currentPosition.tokenIdentifier);
+    const price = await getCoingeckoTokenPrice(currentPosition.tokenIdentifier);
 
-  const amountOutWithoutDecimals = parseFloat(
-    ethers.formatUnits(amountOut, token.decimals),
+    if (!tokenData || !price) continue;
+
+    const tokenContract = new ethers.Contract(
+      tokenData.address,
+      ERC20_ABI,
+      wallet,
+    );
+
+    const amountOut = await getQuoteAndAmountOut(
+      provider,
+      tokenContract,
+      usdgContract,
+      ethers.parseUnits(currentPosition.amount.toString(), tokenData.decimals),
+    );
+
+    if (!amountOut) continue;
+
+    const buyUsdgAmount = currentPosition.price * currentPosition.amount;
+
+    const sellUsdgAmount = price * currentPosition.amount;
+
+    debug(
+      "PNL % ################################################### " +
+        (buyUsdgAmount - sellUsdgAmount / sellUsdgAmount),
+    );
+
+    if (price > currentPosition.price * profitSellThreshold) {
+      const usdgBalanceAfterTx = await swapToken(
+        tokenContract,
+        usdgContract,
+        wallet,
+        ethers.parseUnits(
+          currentPosition.amount.toString(),
+          tokenData.decimals,
+        ),
+        amountOut,
+      );
+      debug("usdgBalanceAfterTx: " + usdgBalanceAfterTx);
+
+      await closePosition(currentPosition.id, buyUsdgAmount - sellUsdgAmount);
+    }
+
+    // TODO add stoploss
+  }
+
+  const tokensWithoutOpenPosition = TOKEN_ADDRESSES.filter(
+    (token) =>
+      !openPositions.some(
+        (position) => position.tokenIdentifier === token.identifier,
+      ),
   );
 
-  const usdgWithoutDecimals = parseFloat(
-    ethers.formatUnits(usdgInAmount, USDG_DECIMALS),
-  );
+  if (!tokensWithoutOpenPosition.length) return;
 
-  const quote = usdgWithoutDecimals / amountOutWithoutDecimals;
+  for (let i = 0; i < tokensWithoutOpenPosition.length; i++) {
+    const usdgInAmount: bigint = 100000n;
 
-  const prices = await getCoingeckoHistoricalPrices(token.identifier);
+    if (!tokensWithoutOpenPosition.length) break;
 
-  const sma = getCurrentSMA(prices);
+    const currentToken = tokensWithoutOpenPosition[i];
 
-  debug("quote: " + quote);
-  debug("sma: " + sma);
+    debug(
+      "NEW POSITION #################################################### " +
+        currentToken.identifier,
+    );
 
-  const quoteVsSMADivergencePercent = ((quote - sma) / sma) * 100;
+    const tokenData = getTokenByIdentifier(currentToken.identifier);
 
-  debug("quoteVsSMADivergencePercent: " + quoteVsSMADivergencePercent);
+    if (!tokenData) continue;
 
-  // 2. Buy tokens if 10% under SMA and tokenBalance < 0.0001
+    const tokenContract = new ethers.Contract(
+      tokenData.address,
+      ERC20_ABI,
+      wallet,
+    );
 
-  if (quoteVsSMADivergencePercent < -10 && tokenBalance < 0.0001) {
-    const tokenBalanceAfterTx = await buyToken(
+    const amountOut = await getQuoteAndAmountOut(
+      provider,
       usdgContract,
       tokenContract,
-      wallet,
       usdgInAmount,
-      amountOut,
     );
-    debug("tokenBalanceAfterTx: " + tokenBalanceAfterTx);
+
+    if (!amountOut) return;
+
+    const price = await getCoingeckoTokenPrice(currentToken.identifier);
+
+    if (!price) continue;
+
+    const historicalPrices = await getCoingeckoHistoricalPrices(
+      tokenData.identifier,
+    );
+
+    const sma = getCurrentSMA(historicalPrices);
+
+    const quoteVsSMADivergencePercent = ((price - sma) / sma) * 100;
+
+    debug("quoteVsSMADivergencePercent: " + quoteVsSMADivergencePercent);
+
+    if (quoteVsSMADivergencePercent < -10) {
+      const tokenBalanceAfterTx = await swapToken(
+        usdgContract,
+        tokenContract,
+        wallet,
+        usdgInAmount,
+        amountOut,
+      );
+
+      debug("tokenBalanceAfterTx: " + tokenBalanceAfterTx);
+
+      const amountOutWithoutDecimals = parseFloat(
+        ethers.formatUnits(amountOut, 18),
+      );
+
+      await createNewPosition(
+        amountOutWithoutDecimals,
+        currentToken.identifier,
+        price,
+      );
+    }
   }
 };
 
