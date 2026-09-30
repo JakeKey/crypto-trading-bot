@@ -1,0 +1,80 @@
+[
+  {
+    "id": "schema.public",
+    "label": "Create schema \"public\"",
+    "operationClass": "additive",
+    "target": {
+      "id": "postgres"
+    },
+    "precheck": [],
+    "execute": [
+      {
+        "description": "Create schema \"public\"",
+        "sql": "CREATE SCHEMA IF NOT EXISTS \"public\"",
+        "params": []
+      }
+    ],
+    "postcheck": []
+  },
+  {
+    "id": "createNativeEnumType.position_status",
+    "label": "Create enum type \"position_status\"",
+    "operationClass": "additive",
+    "target": {
+      "id": "postgres",
+      "details": {
+        "schema": "public",
+        "objectType": "type",
+        "name": "position_status"
+      }
+    },
+    "precheck": [],
+    "execute": [
+      {
+        "description": "create enum type \"position_status\"",
+        "sql": "CREATE TYPE \"public\".\"position_status\" AS ENUM ('open', 'closed')",
+        "params": []
+      }
+    ],
+    "postcheck": []
+  },
+  {
+    "id": "table.positions",
+    "label": "Create table \"positions\"",
+    "summary": "Creates table \"positions\"",
+    "operationClass": "additive",
+    "target": {
+      "id": "postgres",
+      "details": {
+        "schema": "public",
+        "objectType": "table",
+        "name": "positions"
+      }
+    },
+    "precheck": [
+      {
+        "description": "ensure table \"positions\" does not exist",
+        "sql": "SELECT (to_regclass($1)) IS NULL AS \"result\"",
+        "params": [
+          "\"public\".\"positions\""
+        ]
+      }
+    ],
+    "execute": [
+      {
+        "description": "create table \"positions\"",
+        "sql": "CREATE TABLE \"public\".\"positions\" (\n  \"amount\" float8 NOT NULL,\n  \"created_at\" timestamp DEFAULT (now()),\n  \"id\" SERIAL NOT NULL,\n  \"pnl\" float8,\n  \"position_status\" \"position_status\" DEFAULT 'open'::\"position_status\",\n  \"price\" float8 NOT NULL,\n  \"token_identifier\" character varying(63) NOT NULL,\n  CONSTRAINT \"positions_pkey\" PRIMARY KEY (\"id\")\n)",
+        "params": []
+      }
+    ],
+    "postcheck": [
+      {
+        "description": "verify table \"positions\" exists",
+        "sql": "SELECT (to_regclass($1)) IS NOT NULL AS \"result\"",
+        "params": [
+          "\"public\".\"positions\""
+        ]
+      }
+    ]
+  }
+]

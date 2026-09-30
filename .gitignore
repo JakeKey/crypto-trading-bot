@@ -36,6 +36,7 @@ bower_components
 
 # Compiled binary addons (https://nodejs.org/api/addons.html)
 build/Release
+build
 
 # Dependency directories
 node_modules/
@@ -68,6 +69,7 @@ web_modules/
 # dotenv environment variable files
 .env
 .env.*
+!.env.test
 !.env.example
 
 # parcel-bundler cache (https://parceljs.org/)

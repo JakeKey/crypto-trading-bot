@@ -1,24 +1,22 @@
-import { Contract, ContractRunner } from "ethers";
+import { Contract } from "ethers";
 
-import { DebugLevels } from "../types/enums";
-import { QUOTER_V2_ABI } from "../abis";
-import { CONFIG_CONSTS } from "../config";
+import { DebugLevels } from "types/enums";
+import { CONFIG_CONSTS } from "config";
+import { BaseContractMethod } from "ethers";
 import { createDebug } from "../debug";
 
-const { CTB_ALCHEMY_API_KEY, CTB_COINGECKO_API_KEY, QUOTER_V2 } = CONFIG_CONSTS;
+const { CTB_ALCHEMY_API_KEY, CTB_COINGECKO_API_KEY } = CONFIG_CONSTS;
 
 const debug = createDebug("getQuote");
 
 export const getQuoteAndAmountOut = async (
-  provider: ContractRunner,
+  quoteExactInputSingle: BaseContractMethod,
   tokenIn: Contract,
   tokenOut: Contract,
   amountIn: bigint,
   fee = 10000,
 ): Promise<bigint | undefined> => {
   try {
-    const quoter = new Contract(QUOTER_V2, QUOTER_V2_ABI, provider);
-
     const tokenInAddress = await tokenIn.getAddress();
     const tokenOutAddress = await tokenOut.getAddress();
 
@@ -32,7 +30,7 @@ export const getQuoteAndAmountOut = async (
       sqrtPriceLimitX96: 0n,
     };
 
-    const quote = await quoter.quoteExactInputSingle.staticCall(params);
+    const quote = await quoteExactInputSingle.staticCall(params);
 
     if (!quote.length) return 0n;
 
@@ -67,21 +65,21 @@ export const getCurrentSMA = (prices: PriceOC[]): number => {
   return sma;
 };
 
+export const getCoingeckoAPIPriceUrl = (identifier: string) =>
+  `https://api.coingecko.com/api/v3/simple/price?vs_currencies=usd&ids=${identifier}`;
+
 export const getCoingeckoTokenPrice = async (
   identifier: string,
 ): Promise<number | undefined> => {
   try {
     if (!CTB_COINGECKO_API_KEY) return;
 
-    const response = await fetch(
-      `https://api.coingecko.com/api/v3/simple/price?vs_currencies=usd&ids=${identifier}`,
-      {
-        method: "GET",
-        headers: {
-          "x-cg-demo-api-key": CTB_COINGECKO_API_KEY,
-        },
+    const response = await fetch(getCoingeckoAPIPriceUrl(identifier), {
+      method: "GET",
+      headers: {
+        "x-cg-demo-api-key": CTB_COINGECKO_API_KEY,
       },
-    );
+    });
     const tokenPrice: number = (await response.json())[identifier].usd;
     debug("tokenPrice: " + JSON.stringify(tokenPrice));
 
@@ -91,6 +89,9 @@ export const getCoingeckoTokenPrice = async (
   }
 };
 
+export const getCoingeckoAPIHistoricalPricesUrl = (identifier: string) =>
+  `https://api.coingecko.com/api/v3/coins/${identifier}/ohlc?vs_currency=usd&days=14`;
+
 export const getCoingeckoHistoricalPrices = async (
   identifier: string,
 ): Promise<PriceOC[]> => {
@@ -98,7 +99,7 @@ export const getCoingeckoHistoricalPrices = async (
     if (!CTB_COINGECKO_API_KEY) return [];
 
     const response = await fetch(
-      `https://api.coingecko.com/api/v3/coins/${identifier}/ohlc?vs_currency=usd&days=14`,
+      getCoingeckoAPIHistoricalPricesUrl(identifier),
       //   `https://api.coingecko.com/api/v3/coins/robinhood/contract/${address}/ohlc?vs_currency=usd&days=30`,
       {
         method: "GET",

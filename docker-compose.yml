@@ -1,0 +1,16 @@
+services:
+  db:
+    image: postgres:16
+    restart: always
+    container_name: integration-tests-prisma-ctb
+    ports:
+      - "5435:5432"
+    environment:
+      POSTGRES_USER: prismactb
+      POSTGRES_PASSWORD: prismactb
+      POSTGRES_DB: testctb
+    volumes:
+      - db:/var/lib/postgresql/data
+volumes:
+  db:
+    driver: local
