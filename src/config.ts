@@ -1,3 +1,4 @@
+import "temporal-polyfill/global";
 import { config } from "dotenv";
 
 const isTestEnv = process.env.NODE_ENV === "test";

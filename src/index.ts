@@ -1,25 +1,21 @@
 import { ethers } from "ethers";
 
+import { buyUnderSMAStrategy } from "strategies/buyUnderSMAStrategy";
+import { sellOnProfitStrategy } from "strategies/sellOnProfitStrategy";
 import { DebugLevels } from "./types/enums";
-import { ERC20_ABI } from "./abis";
+import { ERC20_ABI, QUOTER_V2_ABI, SWAP_ROUTER_02_ABI } from "./abis";
 import { CONFIG_CONSTS } from "./config";
 import { createDebug } from "./debug";
 import { TOKEN_ADDRESSES, USDG_ADDRESS } from "./contracts";
-import {
-  getCoingeckoHistoricalPrices,
-  getCoingeckoTokenPrice,
-  getCurrentSMA,
-  getQuoteAndAmountOut,
-} from "./helpers/getQuote";
-import { swapToken } from "./helpers/swap";
-import {
-  closePosition,
-  createNewPosition,
-  getOpenPositions,
-} from "./dbQueries/positions";
+import { getOpenPositions } from "./dbQueries/positions";
 
-const { CTB_WALLET_ADDRESS, CTB_ALCHEMY_API_KEY, CTB_PRIVATE_KEY } =
-  CONFIG_CONSTS;
+const {
+  CTB_WALLET_ADDRESS,
+  CTB_ALCHEMY_API_KEY,
+  CTB_PRIVATE_KEY,
+  QUOTER_V2,
+  SWAP_ROUTER_02,
+} = CONFIG_CONSTS;
 
 const url = `https://robinhood-mainnet.g.alchemy.com/v2/${CTB_ALCHEMY_API_KEY}`;
 
@@ -32,40 +28,32 @@ const getTokenByIdentifier = (tokenIdentifier: string) => {
   return TOKEN_ADDRESSES.find((token) => token.identifier === tokenIdentifier);
 };
 
-const sleep = (seconds: number) => {
-  return new Promise((resolve) => setTimeout(resolve, seconds * 1000));
-};
-
 const main = async () => {
   if (!CTB_WALLET_ADDRESS || !CTB_ALCHEMY_API_KEY || !CTB_PRIVATE_KEY) {
     throw new Error("Missing environmental variables!");
   }
 
   const provider = new ethers.JsonRpcProvider(url);
-
   const wallet = new ethers.Wallet(CTB_PRIVATE_KEY, provider);
-
   const usdgContract = new ethers.Contract(USDG_ADDRESS, ERC20_ABI, wallet);
+  const quoter = new ethers.Contract(QUOTER_V2, QUOTER_V2_ABI, provider);
+  const router = new ethers.Contract(
+    SWAP_ROUTER_02,
+    SWAP_ROUTER_02_ABI,
+    wallet,
+  );
 
   const openPositions = await getOpenPositions();
 
-  // Iterate over open positions and sell if above profitSellThreshold
+  // Iterate over open positions and sell if above PROFIT_FACTOR
   for (let i = 0; i < openPositions.length; i++) {
     if (!openPositions.length) break;
 
-    const profitSellThreshold = 1.1;
-
     const currentPosition = openPositions[i];
 
-    debug(
-      "OPEN POSITION ################################################### " +
-        currentPosition.tokenIdentifier,
-    );
-
     const tokenData = getTokenByIdentifier(currentPosition.tokenIdentifier);
-    const price = await getCoingeckoTokenPrice(currentPosition.tokenIdentifier);
 
-    if (!tokenData || !price) continue;
+    if (!tokenData) continue;
 
     const tokenContract = new ethers.Contract(
       tokenData.address,
@@ -73,39 +61,18 @@ const main = async () => {
       wallet,
     );
 
-    const amountOut = await getQuoteAndAmountOut(
-      provider,
-      tokenContract,
+    const PROFIT_FACTOR = 1.1;
+
+    await sellOnProfitStrategy(
+      router.exactInputSingle,
+      quoter.quoteExactInputSingle,
+      wallet,
+      tokenData,
       usdgContract,
-      ethers.parseUnits(currentPosition.amount.toString(), tokenData.decimals),
+      tokenContract,
+      currentPosition,
+      PROFIT_FACTOR,
     );
-
-    if (!amountOut) continue;
-
-    const buyUsdgAmount = currentPosition.price * currentPosition.amount;
-
-    const sellUsdgAmount = price * currentPosition.amount;
-
-    debug(
-      "PNL % ################################################### " +
-        (buyUsdgAmount - sellUsdgAmount / sellUsdgAmount),
-    );
-
-    if (price > currentPosition.price * profitSellThreshold) {
-      const usdgBalanceAfterTx = await swapToken(
-        tokenContract,
-        usdgContract,
-        wallet,
-        ethers.parseUnits(
-          currentPosition.amount.toString(),
-          tokenData.decimals,
-        ),
-        amountOut,
-      );
-      debug("usdgBalanceAfterTx: " + usdgBalanceAfterTx);
-
-      await closePosition(currentPosition.id, buyUsdgAmount - sellUsdgAmount);
-    }
 
     // TODO add stoploss
   }
@@ -119,17 +86,11 @@ const main = async () => {
 
   if (!tokensWithoutOpenPosition.length) return;
 
+  // Iterate over whitelisted coins and buy if under UNDER_SMA_FACTOR
   for (let i = 0; i < tokensWithoutOpenPosition.length; i++) {
-    const usdgInAmount: bigint = 100000n;
-
     if (!tokensWithoutOpenPosition.length) break;
 
     const currentToken = tokensWithoutOpenPosition[i];
-
-    debug(
-      "NEW POSITION #################################################### " +
-        currentToken.identifier,
-    );
 
     const tokenData = getTokenByIdentifier(currentToken.identifier);
 
@@ -141,50 +102,17 @@ const main = async () => {
       wallet,
     );
 
-    const amountOut = await getQuoteAndAmountOut(
-      provider,
+    const UNDER_SMA_FACTOR = 0.9;
+
+    await buyUnderSMAStrategy(
+      router.exactInputSingle,
+      quoter.quoteExactInputSingle,
+      wallet,
+      tokenData,
       usdgContract,
       tokenContract,
-      usdgInAmount,
+      UNDER_SMA_FACTOR,
     );
-
-    if (!amountOut) return;
-
-    const price = await getCoingeckoTokenPrice(currentToken.identifier);
-
-    if (!price) continue;
-
-    const historicalPrices = await getCoingeckoHistoricalPrices(
-      tokenData.identifier,
-    );
-
-    const sma = getCurrentSMA(historicalPrices);
-
-    const quoteVsSMADivergencePercent = ((price - sma) / sma) * 100;
-
-    debug("quoteVsSMADivergencePercent: " + quoteVsSMADivergencePercent);
-
-    if (quoteVsSMADivergencePercent < -10) {
-      const tokenBalanceAfterTx = await swapToken(
-        usdgContract,
-        tokenContract,
-        wallet,
-        usdgInAmount,
-        amountOut,
-      );
-
-      debug("tokenBalanceAfterTx: " + tokenBalanceAfterTx);
-
-      const amountOutWithoutDecimals = parseFloat(
-        ethers.formatUnits(amountOut, 18),
-      );
-
-      await createNewPosition(
-        amountOutWithoutDecimals,
-        currentToken.identifier,
-        price,
-      );
-    }
   }
 };
 

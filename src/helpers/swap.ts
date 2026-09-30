@@ -1,7 +1,6 @@
-import { ethers, Contract, Wallet } from "ethers";
+import { Contract, Wallet, BaseContractMethod } from "ethers";
 
 import { DebugLevels } from "../types/enums";
-import { SWAP_ROUTER_02_ABI } from "../abis";
 import { createDebug } from "../debug";
 import { CONFIG_CONSTS } from "../config";
 
@@ -34,6 +33,7 @@ export const checkAllowance = async (
 };
 
 export const swapToken = async (
+  exactInputSingle: BaseContractMethod,
   tokenIn: Contract,
   tokenOut: Contract,
   wallet: Wallet,
@@ -42,12 +42,6 @@ export const swapToken = async (
   fee = 10000,
 ): Promise<bigint | undefined> => {
   try {
-    const router = new ethers.Contract(
-      SWAP_ROUTER_02,
-      SWAP_ROUTER_02_ABI,
-      wallet,
-    );
-
     const params = {
       tokenIn: await tokenIn.getAddress(),
       tokenOut: await tokenOut.getAddress(),
@@ -60,11 +54,11 @@ export const swapToken = async (
 
     await checkAllowance(tokenIn, wallet, amountIn);
 
-    const gasEstimate = await router.exactInputSingle.estimateGas(params);
+    const gasEstimate = await exactInputSingle.estimateGas(params);
 
     debug("gasEstimate: " + gasEstimate);
 
-    const tx = await router.exactInputSingle(params, {
+    const tx = await exactInputSingle(params, {
       gasLimit: (gasEstimate * 120n) / 100n,
     });
     debug(`Submitted tx ${tx.hash}, waiting for confirmation...`);
