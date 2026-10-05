@@ -3,25 +3,29 @@ import { expect } from "chai";
 import * as sinon from "sinon";
 import { ethers, BaseContractMethod } from "ethers";
 
-import { buyUnderSMAStrategy } from "strategies/buyUnderSMAStrategy";
-import { TOKEN_ADDRESSES } from "contracts";
+import { TOKEN_ADDRESSES, USDG_DECIMALS } from "contracts";
 import { SWAP_ROUTER_02_ABI } from "abis";
 import { CONFIG_CONSTS } from "config";
 import {
   getCoingeckoAPIHistoricalPricesUrl,
   getCoingeckoAPIPriceUrl,
   getCurrentSMA,
+  getQuoteAndAmountOut,
 } from "helpers/getQuote";
-import { getOpenPositions } from "dbQueries/positions";
+import {
+  closePosition,
+  createNewPosition,
+  getPositionByStatus,
+} from "dbQueries/positions";
 
 import { createDebug } from "../debug";
 import { cleanTestDatabase } from "./setup";
 
 const { SWAP_ROUTER_02 } = CONFIG_CONSTS;
 
-// TODO add test cases
+// TODO add test cases and clean
 
-const debug = createDebug("Test Buy Strategy");
+const debug = createDebug("Test swap functions");
 
 interface Erc20Fake {
   allowance: sinon.SinonSpy<[string, string], Promise<bigint>>;
@@ -36,7 +40,9 @@ const usdgBuyAmountBigInt = ethers.parseUnits(usdgBuyAmount.toString(), 6);
 
 const underSMAFactor = 0.9;
 
-const provider = new ethers.JsonRpcProvider("fakeurl.com");
+const fakeUrl = "fakeurl.com";
+
+const provider = new ethers.JsonRpcProvider(fakeUrl);
 
 const wallet = new ethers.Wallet(
   "0xe806686101aae52d7d2882c5bcf3ebe4232c1bab38204de755c7cea7c05cd123",
@@ -60,8 +66,12 @@ const sma = getCurrentSMA(pricesOC);
 const price = { [token.identifier]: { usd: 0.5 * sma - 0.0001 } };
 
 const TOKEN_QUOTE_MOCK = 1.23;
+const TOKEN_QUOTE_MOCK_BIG_INT = ethers.parseUnits(
+  TOKEN_QUOTE_MOCK.toString(),
+  token.decimals,
+);
 
-const quote = [ethers.parseUnits(TOKEN_QUOTE_MOCK.toString(), token.decimals)];
+const quote = [TOKEN_QUOTE_MOCK_BIG_INT];
 
 const txSuccessReturn = {
   hash: "0x111",
@@ -79,13 +89,6 @@ const fakeFetch = sinon.fake(async (url) => {
 });
 
 sinon.replace(globalThis, "fetch", fakeFetch);
-
-// const fakeRouterExactInputSingle = sinon.replace(
-//   router as unknown as Erc20Fake,
-//   "exactInputSingle",
-//   sinon.fake.resolves(txSuccessReturn) as Erc20Fake["exactInputSingle"],
-//   //   sinon.fake.returns(FakeContract() as unknown as Contract),
-// );
 
 const fakeQuoter = {
   quoteExactInputSingle: {
@@ -113,51 +116,73 @@ const fakeTokenContract = {
   balanceOf: sinon.fake.resolves(1000n),
 };
 
-describe("Buy Strategy tests", () => {
+describe("Get Quote tests", () => {
   afterEach(async () => {
+    sinon.restore();
     await cleanTestDatabase();
   });
 
-  it("should buy token and create position in database if price < SMA*underSMAFactor", (done) => {
-    buyUnderSMAStrategy(
-      fakeExactInputSingle as unknown as BaseContractMethod,
+  it("should call proper functions and return quote", (done) => {
+    const USDG_BUY_AMOUNT = ethers.parseUnits((0.1).toString(), USDG_DECIMALS);
+
+    getQuoteAndAmountOut(
       fakeQuoter.quoteExactInputSingle as unknown as BaseContractMethod,
-      wallet,
-      token,
       fakeUsdgContract as unknown as ethers.Contract,
       fakeTokenContract as unknown as ethers.Contract,
-      underSMAFactor,
+      USDG_BUY_AMOUNT,
     )
       .then((result) => {
-        expect(fakeUsdgContract.getAddress.callCount).to.equal(2);
-        expect(fakeTokenContract.getAddress.callCount).to.equal(2);
+        expect(fakeUsdgContract.getAddress.callCount).to.equal(1);
+        expect(fakeTokenContract.getAddress.callCount).to.equal(1);
         expect(fakeQuoter.quoteExactInputSingle.staticCall.callCount).to.equal(
           1,
         );
-        expect(fakeUsdgContract.allowance.callCount).to.equal(1);
-        expect(fakeUsdgContract.approve.callCount).to.equal(1);
-        expect(fakeExactInputSingle.estimateGas?.callCount).to.equal(1);
-        expect(fakeExactInputSingle.callCount).to.equal(1);
-        expect(fakeTokenContract.balanceOf.callCount).to.equal(1);
 
-        expect(result).to.equal(TOKEN_QUOTE_MOCK);
+        expect(result).to.equal(TOKEN_QUOTE_MOCK_BIG_INT);
 
-        getOpenPositions()
-          .then((data) => {
-            expect(data).to.be.an("array");
-            expect(data?.length).to.equal(1);
-
-            const position = data[0];
-            expect(position.amount).to.equal(TOKEN_QUOTE_MOCK);
-            expect(position.tokenIdentifier).to.equal(token.identifier);
-            done();
-          })
-          .catch((err) => {
-            done(err);
-          });
+        done();
       })
       .catch((err) => {
         done(err);
       });
+  });
+
+  it("should create new position, return it as an open position and later close it", async () => {
+    const TOKEN_AMOUNT = 1.234;
+    const FAKE_PRICE = 3.21;
+    const FAKE_PNL = 4.56;
+
+    let openPositions = await getPositionByStatus("open");
+    expect(openPositions).to.be.an("array");
+    expect(openPositions?.length).to.equal(0);
+    let closedPositions = await getPositionByStatus("closed");
+    expect(closedPositions).to.be.an("array");
+    expect(closedPositions?.length).to.equal(0);
+
+    await createNewPosition(TOKEN_AMOUNT, token.identifier, FAKE_PRICE);
+
+    openPositions = await getPositionByStatus("open");
+    expect(openPositions).to.be.an("array");
+    expect(openPositions?.length).to.equal(1);
+
+    const openPosition = openPositions[0];
+    expect(openPosition.amount).to.equal(TOKEN_AMOUNT);
+    expect(openPosition.price).to.equal(FAKE_PRICE);
+    expect(openPosition.tokenIdentifier).to.equal(token.identifier);
+
+    await closePosition(openPosition.id, FAKE_PNL);
+
+    openPositions = await getPositionByStatus("open");
+    expect(openPositions).to.be.an("array");
+    expect(openPositions?.length).to.equal(0);
+
+    closedPositions = await getPositionByStatus("closed");
+    expect(closedPositions).to.be.an("array");
+    expect(closedPositions?.length).to.equal(1);
+
+    const closedPosition = closedPositions[0];
+    expect(closedPosition.amount).to.equal(TOKEN_AMOUNT);
+    expect(closedPosition.price).to.equal(FAKE_PRICE);
+    expect(closedPosition.tokenIdentifier).to.equal(token.identifier);
   });
 });
