@@ -2,7 +2,7 @@ import { Varchar } from "@prisma/orm-postgres/target/codec-types";
 
 import { db } from "../prisma/db";
 
-export const getOpenPositions = async () => {
+export const getPositionByStatus = async (status: "open" | "closed") => {
   return await db.orm.public.Positions.select(
     "id",
     "tokenIdentifier",
@@ -10,7 +10,7 @@ export const getOpenPositions = async () => {
     "price",
   )
     .where({
-      positionStatus: "open",
+      positionStatus: status,
     })
     .all();
 };
